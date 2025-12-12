@@ -1,6 +1,3 @@
-# pip install beautifulsoup4 openpyxl fake_useragent selenium
-# Race Meetings.xlsx
-
 import re
 import time
 from selenium import webdriver
@@ -18,7 +15,7 @@ ua = UserAgent()
 USER_AGENT = ua.random
 ChromeDriverPath = "C:/chromedriver/chromedriver.exe"
 
-BASE_URL = 'https://www.tab.com.au'
+BASE_URL = 'https://www.sportsbet.com.au/'
 FILE_NAME = 'Race Meetings.xlsm'
 target_column = 23
 ALLOWED_MEETINGS = ['(VIC)', '(NSW)', '(QLD)', '(SA)', '(WA)', '(NT)', '(TAS)', '(ACT)', '(NZ)', '(NZL)']
@@ -46,123 +43,101 @@ def setup_driver():
     
     return driver
 
-def find_all_races(html):
-    soup = BeautifulSoup(html, 'html.parser')
-    meetings = soup.find_all('div', {'data-testid': 'meeting', 'class': '_1e6ktkp'})
-    race_links = soup.find_all('a', {'data-testid': 'race'})
-    meetings_pre = [meeting.text for meeting in meetings]
-    print(meetings_pre)
-    meetings_names = []
-    for meeting in meetings_pre:
-        for allow in ALLOWED_MEETINGS:
-            if allow.lower() in meeting.lower():
-                meetings_names.append(meeting.split('(')[0].strip().lower())
-    rounds_links = [link['href'] for link in race_links]
-
-    print(meetings_names)
-
-    return meetings_names, rounds_links
-
-def extract_sky_rating(driver, url, meetings_names):
+def extract_sb_rating(driver, url):
     global SR
-    meeting_name = url.split('/')[3]
 
-    if meeting_name.lower().replace('-', ' ') in meetings_names:
-        SR.setdefault(meeting_name, {})
+    driver.get(BASE_URL + url)
+    time.sleep(3)
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+
+    # --- SELECT ALL RUNNERS ---
+    runners = soup.find_all(
+        "div",
+        attrs={
+            "data-automation-id": re.compile(r"^racecard-outcome-\d+$")
+        }
+    )
+
+    for r in runners:
         try:
-            driver.get(BASE_URL + url)
-        except:
-            driver.execute_script("window.stop()")
-
-        time.sleep(5)
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Each horse row
-        rows = soup.select("div.row")  # Debug print
-
-        for row in rows:
-            try:
-                horse_el = row.select_one("div.runner-name")
-                if not horse_el:
-                    continue
-
-                horse_name = horse_el.get_text(strip=True).split("(")[0].strip()
-                # Sky Rating is inside a <div> with a numeric value
-                rating_el = row.select_one("div.runner-rating-cell span")
-                if rating_el:
-                    sky_rating = rating_el.get_text(strip=True)
-
-                    if sky_rating.isdigit():
-                        SR[meeting_name][horse_name] = sky_rating
-                        print("Sky Ratinggggggggggggggggg:", meeting_name, horse_name, sky_rating)
-
-            except Exception as e:
-                print(f"Error extracting horse data: {e}")  # Log any errors
+            # Horse name
+            horse_el = r.select_one("div[data-automation-id='racecard-outcome-name'] span")
+            if not horse_el:
                 continue
 
-def extract_FS(driver, url, meetings_names):
-    global FS
-    meeting_name = url.split('/')[3]
-    if meeting_name.lower().replace('-', ' ') in meetings_names:
-        try:
-            driver.get(BASE_URL + url)
-        except:
-            driver.execute_script("window.stop()")
-        try:
-            if FS[meeting_name]:
-                pass
-        except:
-            FS[meeting_name] = {}
-        try:
-            button = WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.XPATH, "//button[.//span[text()='Show All Form']]")))
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-            button.click()
-        except:
-            pass
-        while True:
-            time.sleep(1)
-            html = driver.page_source
-            soup = BeautifulSoup(html, 'html.parser')
-            FS_element = soup.find_all('p', {'class': 'comment-paragraph'})
-            horse_name_divs = soup.find_all('div', {'class': 'row active'})
-            if FS_element.__len__() > 0:
-                print(FS_element.__len__(), horse_name_divs.__len__())
-                for i in range(FS_element.__len__()):
-                    horse_name = BeautifulSoup(str(horse_name_divs[i]), 'html.parser').find('div', {'class': 'runner-name'}).text.split('(')[0].strip()
-                    FS[meeting_name][horse_name] = re.search(r"\(([-+]?\d*\.?\d+)\)", FS_element[i].text).group(1)
-                print(FS)
-                break
+            horse_name = horse_el.get_text(strip=True)
+            
+            # Horse ID used in shortform
+            hid = r.get("data-automation-id").replace("racecard-outcome-", "")
+
+            # Find shortform container by ID
+            sf = soup.select_one(f"div[data-automation-id='shortform-{hid}']")
+            if not sf:
+                continue
+
+            # Extract SB Rating
+            sb_div = sf.select_one("div[data-automation-id='shortform-SB Rating']")
+            if not sb_div:
+                continue
+
+            spans = sb_div.select("span")
+            sb_rating = spans[-1].get_text(strip=True)   # last span contains the number
+
+            # Save
+            SR.setdefault("RACE", {})    # You can change name
+            SR["RACE"][horse_name] = sb_rating
+
+            print(f"RaceName, {horse_name}, SB Rating {sb_rating}")
+
+        except Exception as e:
+            print("Error:", e)
+            continue
 
 
-def get_meetings(driver, url):
-    try:
-        driver.get(url, )
-    except:
-        driver.execute_script("window.stop()")
-    try:
-        driver.get(url + 'R', )
-    except:
-        driver.execute_script("window.stop()")
+def get_race_links(driver, meeting_url):
+    driver.get(BASE_URL + meeting_url)
+    time.sleep(2)
 
-    # WAIT for meeting cards
-    try:
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-testid='meeting']"))
-        )
-    except:
-        print(" ERROR: TAB meetings did not load.")
-        html = driver.page_source
-        # print(html)
-        return
+    soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    html = driver.page_source
-    meetings_names, rounds_links = find_all_races(html=html)
+    links = []
+
+    race_items = soup.select("a.link_fqiekv4")  # SportsBet uses this class for race links
+
+    for a in race_items:
+        href = a.get("href")
+        if href and "/race-" in href:
+            links.append(href)
+
+    return links
 
 
-    for i in range(rounds_links.__len__()):
-        extract_FS(driver, rounds_links[i], meetings_names)
-        extract_sky_rating(driver, rounds_links[i], meetings_names)
+def get_meetings(driver):
+    driver.get(BASE_URL + "/racing-schedule")
+    time.sleep(3)
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+
+    # find all event cells
+    cells = soup.find_all(
+        "td",
+        attrs={
+            "data-automation-id": re.compile(
+                r"^horse-racing-section-row-\d+-col-\d+-event-cell$"
+            )
+        },
+    )
+
+    meeting_links = []
+
+    for td in cells:
+        a = td.find("a", href=True)
+        if a:
+            meeting_links.append(a["href"])
+
+    return meeting_links
+
 
 
 def merge_excel(excel_file, FS):
@@ -184,36 +159,6 @@ def merge_excel(excel_file, FS):
 
     print("\n📌 FS meetings loaded:", list(FS.keys()))
     print("📌 SR meetings loaded:", list(SR.keys()))
-
-    # --- PROCESS FS (TAB FS) ---
-    print("\n==============================")
-    print("🔸 PROCESSING TAB FS (Col W)")
-    print("==============================")
-
-    for raw_sheet_name, horses in FS.items():
-        norm_name = normalize(raw_sheet_name)
-        actual_sheet_name = normalized_sheet_map.get(norm_name)
-
-        print(f"\n➡ Meeting FS: '{raw_sheet_name}' normalized to '{norm_name}'")
-
-        if not actual_sheet_name:
-            print(f"❌ No matching sheet found for FS meeting: {raw_sheet_name}")
-            continue
-
-        print(f"✔ Matched FS sheet: {actual_sheet_name}")
-        print(f"🐎 Horses in FS for this meeting: {list(horses.keys())}")
-
-        sheet = workbook[actual_sheet_name]
-
-        for row in sheet.iter_rows(min_row=1):
-            for cell in row:
-                horse_name = str(cell.value).strip() if cell.value else ""
-                if horse_name in horses:
-                    fs_value = horses[horse_name]
-                    sheet.cell(row=cell.row, column=23, value=fs_value)
-
-                    print(f"   ➕ FS Saved | Row {cell.row} | Horse: '{horse_name}' | Value: {fs_value}")
-
 
     # --- PROCESS SKY RATING ---
     print("\n==============================")
@@ -250,16 +195,24 @@ def merge_excel(excel_file, FS):
     print("==============================\n")
 
 
-
 def main():
-    
     driver = setup_driver()
-    get_meetings(driver=driver, url=BASE_URL + "/racing/meetings/today/")
 
-    merge_excel(FILE_NAME, FS)
+    meeting_links = get_meetings(driver)
+
+    for meeting_url in meeting_links:
+        print("📌 Meeting:", meeting_url)
+
+        race_links = extract_sb_rating(driver, meeting_url)
+
+        for r_url in race_links:
+            print(" → Race:", r_url)
+            extract_sb_rating(driver, r_url, [])  # empty list = disable filtering
+
+    merge_excel(FILE_NAME, FS)  # FS optional
+    merge_excel(FILE_NAME, SR)  # save SB rating to column X
 
     driver.quit()
-
 
 if __name__ == '__main__':
     main()
