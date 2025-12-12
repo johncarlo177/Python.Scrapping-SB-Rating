@@ -15,7 +15,7 @@ ua = UserAgent()
 USER_AGENT = ua.random
 ChromeDriverPath = "C:/chromedriver/chromedriver.exe"
 
-BASE_URL = 'https://www.sportsbet.com.au/'
+BASE_URL = 'https://www.sportsbet.com.au'
 FILE_NAME = 'Race Meetings.xlsm'
 target_column = 23
 ALLOWED_MEETINGS = ['(VIC)', '(NSW)', '(QLD)', '(SA)', '(WA)', '(NT)', '(TAS)', '(ACT)', '(NZ)', '(NZL)']
@@ -43,77 +43,70 @@ def setup_driver():
     
     return driver
 
-def extract_sb_rating(driver, url):
+def extract_sb_rating(driver, race_url):
     global SR
 
-    driver.get(BASE_URL + url)
-    time.sleep(3)
+    driver.get(BASE_URL + race_url)
+    wait = WebDriverWait(driver, 15)
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-
-    # --- SELECT ALL RUNNERS ---
-    runners = soup.find_all(
-        "div",
-        attrs={
-            "data-automation-id": re.compile(r"^racecard-outcome-\d+$")
-        }
+    wait.until(
+        EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "div[data-automation-id^='racecard-outcome-']")
+        )
     )
 
-    for r in runners:
+    runner_ids = [
+        el.get_attribute("data-automation-id").replace("racecard-outcome-", "")
+        for el in driver.find_elements(
+            By.CSS_SELECTOR,
+            "div[data-automation-id^='racecard-outcome-']")
+    ]
+
+    print("--Next Race--")
+
+    for runner_id in runner_ids:
         try:
-            # Horse name
-            horse_el = r.select_one("div[data-automation-id='racecard-outcome-name'] span")
+            r = driver.find_element(
+                By.CSS_SELECTOR,
+                f"div[data-automation-id='racecard-outcome-{runner_id}']"
+            )
+
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", r
+            )
+            driver.execute_script("arguments[0].click();", r)
+
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+
+            horse_el = soup.select_one(
+                f"div[data-automation-id='racecard-outcome-{runner_id}'] "
+                "div[data-automation-id='racecard-outcome-name'] span"
+            )
             if not horse_el:
                 continue
 
-            horse_name = horse_el.get_text(strip=True)
-            
-            # Horse ID used in shortform
-            hid = r.get("data-automation-id").replace("racecard-outcome-", "")
+            raw_name = horse_el.get_text(strip=True)
+            horse_name = re.sub(r"^\d+\.\s*", "", raw_name)
 
-            # Find shortform container by ID
-            sf = soup.select_one(f"div[data-automation-id='shortform-{hid}']")
-            if not sf:
+            sb_el = soup.select_one(
+                f"div[data-automation-id='shortform-{runner_id}'] "
+                "div[data-automation-id='shortform-SB Rating'] span:last-child"
+            )
+            if not sb_el:
                 continue
 
-            # Extract SB Rating
-            sb_div = sf.select_one("div[data-automation-id='shortform-SB Rating']")
-            if not sb_div:
-                continue
+            sb_rating = sb_el.get_text(strip=True)
 
-            spans = sb_div.select("span")
-            sb_rating = spans[-1].get_text(strip=True)   # last span contains the number
-
-            # Save
-            SR.setdefault("RACE", {})    # You can change name
+            SR.setdefault("RACE", {})
             SR["RACE"][horse_name] = sb_rating
 
-            print(f"RaceName, {horse_name}, SB Rating {sb_rating}")
+            print(f"✅ {horse_name} → SB Rating {sb_rating}")
 
-        except Exception as e:
-            print("Error:", e)
+        except Exception:
+            # intentionally silent – DOM instability
             continue
 
-
-def get_race_links(driver, meeting_url):
-    driver.get(BASE_URL + meeting_url)
-    time.sleep(2)
-
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-
-    links = []
-
-    race_items = soup.select("a.link_fqiekv4")  # SportsBet uses this class for race links
-
-    for a in race_items:
-        href = a.get("href")
-        if href and "/race-" in href:
-            links.append(href)
-
-    return links
-
-
-def get_meetings(driver):
+def get_races(driver):
     driver.get(BASE_URL + "/racing-schedule")
     time.sleep(3)
 
@@ -129,15 +122,14 @@ def get_meetings(driver):
         },
     )
 
-    meeting_links = []
+    race_links = []
 
     for td in cells:
         a = td.find("a", href=True)
         if a:
-            meeting_links.append(a["href"])
+            race_links.append(a["href"])
 
-    return meeting_links
-
+    return race_links
 
 
 def merge_excel(excel_file, FS):
@@ -198,19 +190,13 @@ def merge_excel(excel_file, FS):
 def main():
     driver = setup_driver()
 
-    meeting_links = get_meetings(driver)
+    race_links = get_races(driver)
 
-    for meeting_url in meeting_links:
-        print("📌 Meeting:", meeting_url)
+    for race_link in race_links:
+         extract_sb_rating(driver, race_link)
 
-        race_links = extract_sb_rating(driver, meeting_url)
-
-        for r_url in race_links:
-            print(" → Race:", r_url)
-            extract_sb_rating(driver, r_url, [])  # empty list = disable filtering
-
-    merge_excel(FILE_NAME, FS)  # FS optional
-    merge_excel(FILE_NAME, SR)  # save SB rating to column X
+    # merge_excel(FILE_NAME, FS)  # FS optional
+    # merge_excel(FILE_NAME, SR)  # save SB rating to column X
 
     driver.quit()
 
