@@ -131,60 +131,36 @@ def get_races(driver):
 
     return race_links
 
+def normalize_horse(name: str) -> str:
+    return (
+        name.strip()
+        .upper()          # case-insensitive
+        .replace(".", "") # remove dots like "5. "
+    )
 
-def merge_excel(excel_file, FS):
-    print("\n==============================")
-    print("🔍 DEBUG: Starting merge_excel")
-    print("==============================")
 
+def save_sb_to_excel(excel_file, SR):
     workbook = load_workbook(filename=excel_file, keep_vba=True)
 
-    def normalize(name):
-        return name.strip().lower().replace("-", " ")
-
-    # Normalize all sheet names
-    normalized_sheet_map = {normalize(name): name for name in workbook.sheetnames}
-
-    print("\n📄 Sheets in workbook:")
-    for k, v in normalized_sheet_map.items():
-        print(f"  '{k}'  →  '{v}'")
-
-    print("\n📌 FS meetings loaded:", list(FS.keys()))
-    print("📌 SR meetings loaded:", list(SR.keys()))
-
-    # --- PROCESS SKY RATING ---
-    print("\n==============================")
-    print("🔸 PROCESSING SKY RATING (Col X)")
-    print("==============================")
-
-    for raw_sheet_name, horses in SR.items():
-        norm_name = normalize(raw_sheet_name)
-        actual_sheet_name = normalized_sheet_map.get(norm_name)
-
-        print(f"\n➡ Meeting SR: '{raw_sheet_name}' normalized to '{norm_name}'")
-
-        if not actual_sheet_name:
-            print(f"❌ No matching sheet found for SR meeting: {raw_sheet_name}")
-            continue
-
-        print(f"✔ Matched SR sheet: {actual_sheet_name}")
-        print(f"🌟 Horses in SR for this meeting: {list(horses.keys())}")
-
-        sheet = workbook[actual_sheet_name]
+    for sheet_name in workbook.sheetnames:
+        sheet = workbook[sheet_name]
 
         for row in sheet.iter_rows(min_row=1):
-            for cell in row:
-                horse_name = str(cell.value).strip() if cell.value else ""
-                if horse_name in horses:
-                    sky_value = horses[horse_name]
-                    sheet.cell(row=cell.row, column=24, value=sky_value)
+            horse_cell = row[3]  # Column D
+            if not horse_cell.value:
+                continue
 
-                    print(f"   ⭐ Sky Saved | Row {cell.row} | Horse: '{horse_name}' | Value: {sky_value}")
+            excel_horse = normalize_horse(str(horse_cell.value))
+
+            for sb_horse, sb_rating in SR.get("RACE", {}).items():
+                if normalize_horse(sb_horse) == excel_horse:
+                    sheet.cell(row=horse_cell.row, column=25, value=sb_rating)
+                    print(
+                        f"Saved | {horse_cell.value} → {sb_rating}"
+                    )
+                    break
 
     workbook.save(excel_file)
-    print("\n==============================")
-    print("🎉 Excel updated successfully")
-    print("==============================\n")
 
 
 def main():
@@ -195,10 +171,8 @@ def main():
     for race_link in race_links:
          extract_sb_rating(driver, race_link)
 
-    # merge_excel(FILE_NAME, FS)  # FS optional
-    # merge_excel(FILE_NAME, SR)  # save SB rating to column X
-
     driver.quit()
+    save_sb_to_excel(FILE_NAME, SR)
 
 if __name__ == '__main__':
     main()
