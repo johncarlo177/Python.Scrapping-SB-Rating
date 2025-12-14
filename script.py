@@ -106,13 +106,83 @@ def extract_sb_rating(driver, race_url):
             # intentionally silent – DOM instability
             continue
 
+def disable_international_filter(driver):
+    wait = WebDriverWait(driver, 20)
+
+    try:
+        # Detect ON state
+        on_state = driver.find_elements(
+            By.CSS_SELECTOR,
+            "div[data-automation-id='filter-button-international-on']"
+        )
+
+        if not on_state:
+            print("Int'l already OFF")
+            return
+
+        print("Int'l filter ON → disabling")
+
+        # Click the LABEL (this is critical)
+        label = wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "label[for='ALL_RACING_PAGEINTERNATIONAL']")
+            )
+        )
+
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center'});", label
+        )
+        time.sleep(0.3)
+
+        driver.execute_script("arguments[0].click();", label)
+
+        # WAIT FOR OFF STATE
+        wait.until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div[data-automation-id='filter-button-international-off']")
+            )
+        )
+
+        # WAIT FOR TABLE RE-DRAW (critical)
+        wait.until(
+            EC.staleness_of(
+                driver.find_element(
+                    By.CSS_SELECTOR,
+                    "td[data-automation-id^='horse-racing-section-row-']"
+                )
+            )
+        )
+
+        print("Int'l filter OFF")
+
+    except Exception as e:
+        print("Failed to disable Int'l filter:", e)
+
+
 def get_races(driver):
     driver.get(BASE_URL + "/racing-schedule")
-    time.sleep(3)
+
+    wait = WebDriverWait(driver, 20)
+
+    # Initial load
+    wait.until(
+        EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "td[data-automation-id^='horse-racing-section-row-']")
+        )
+    )
+
+    # Disable Int'l properly
+    disable_international_filter(driver)
+
+    # Re-wait after filter
+    wait.until(
+        EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "td[data-automation-id^='horse-racing-section-row-']")
+        )
+    )
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # find all event cells
     cells = soup.find_all(
         "td",
         attrs={
@@ -122,12 +192,13 @@ def get_races(driver):
         },
     )
 
-    race_links = []
+    race_links = [
+        a["href"]
+        for td in cells
+        if (a := td.find("a", href=True))
+    ]
 
-    for td in cells:
-        a = td.find("a", href=True)
-        if a:
-            race_links.append(a["href"])
+    print(f"Filtered races (AU/NZ only): {len(race_links)}")
 
     return race_links
 
