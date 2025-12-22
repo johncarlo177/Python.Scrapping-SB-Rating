@@ -159,103 +159,48 @@ def disable_international_filter(driver):
         print("Failed to disable Int'l filter:", e)
 
 
-def get_races_for_meeting(driver, excel_meeting_name):
-    wait = WebDriverWait(driver, 20)
-
+def get_races(driver):
     driver.get(BASE_URL + "/racing-schedule")
 
-    # Wait initial table
+    wait = WebDriverWait(driver, 20)
+
+    # Initial load
     wait.until(
         EC.presence_of_element_located(
-            (By.CSS_SELECTOR, "td[data-automation-id$='-meeting-cell']")
+            (By.CSS_SELECTOR, "td[data-automation-id^='horse-racing-section-row-']")
         )
     )
 
-    # Disable Int'l
+    # Disable Int'l properly
     disable_international_filter(driver)
 
     # Re-wait after filter
     wait.until(
         EC.presence_of_element_located(
-            (By.CSS_SELECTOR, "td[data-automation-id$='-meeting-cell']")
+            (By.CSS_SELECTOR, "td[data-automation-id^='horse-racing-section-row-']")
         )
     )
 
     soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    target_meeting = normalize_meeting(excel_meeting_name)
-
-    race_links = []
-
-    # 1️⃣ Find ALL meeting cells
-    meeting_cells = soup.select(
-        "td[data-automation-id^='horse-racing-section-row-'][data-automation-id$='-meeting-cell']"
+    cells = soup.find_all(
+        "td",
+        attrs={
+            "data-automation-id": re.compile(
+                r"^horse-racing-section-row-\d+-col-\d+-event-cell$"
+            )
+        },
     )
 
-    for meeting_cell in meeting_cells:
-        name_el = meeting_cell.select_one(
-            "span[data-automation-id$='-meeting-name']"
-        )
+    race_links = [
+        a["href"]
+        for td in cells
+        if (a := td.find("a", href=True))
+    ]
 
-        if not name_el:
-            continue
+    print(f"Filtered races (AU/NZ only): {len(race_links)}")
 
-        meeting_text = name_el.get_text(strip=True)
-
-        if normalize_meeting(meeting_text) != target_meeting:
-            continue
-
-        # ✅ row number
-        row_match = re.search(
-            r"row-(\d+)-meeting-cell",
-            meeting_cell["data-automation-id"]
-        )
-        if not row_match:
-            continue
-
-        row_number = row_match.group(1)
-        print(f"🎯 Matched meeting: {meeting_text} (row {row_number})")
-
-        # ✅ find race cells for that row
-        race_cells = soup.select(
-            f"td[data-automation-id^='horse-racing-section-row-{row_number}-col-'][data-automation-id$='-event-cell']"
-        )
-
-        for td in race_cells:
-            a = td.find("a", href=True)
-            if a:
-                race_links.append(a["href"])
-
-        break  # only one meeting
-
-    print(f"🏇 Races found for {excel_meeting_name}: {len(race_links)}")
     return race_links
-
-
-def get_meeting_from_excel():
-    workbook = load_workbook(FILE_NAME, keep_vba=True)
-
-    sheet = workbook.active  # or workbook.worksheets[0]
-
-    meeting_name = sheet["G1"].value
-
-    if meeting_name:
-        meeting_name = str(meeting_name).strip()
-        print(f"📍 Meeting name from Excel: {meeting_name}")
-        return meeting_name
-
-    print("⚠ No meeting name found in G1")
-    return None
-
-def normalize_meeting(name: str) -> str:
-    return (
-        name.strip()
-        .lower()
-        .replace("(australia)", "")
-        .replace("(nz)", "")
-    )
-
-
 
 def normalize_horse(name: str) -> str:
     return (
@@ -263,6 +208,7 @@ def normalize_horse(name: str) -> str:
         .upper()          # case-insensitive
         .replace(".", "") # remove dots like "5. "
     )
+
 
 def save_sb_to_excel(excel_file, SR):
     workbook = load_workbook(filename=excel_file, keep_vba=True)
@@ -287,24 +233,33 @@ def save_sb_to_excel(excel_file, SR):
 
     workbook.save(excel_file)
 
+def get_meeting_from_excel():
+    workbook = load_workbook(FILE_NAME, keep_vba=True)
 
+    sheet = workbook.active  # or workbook.worksheets[0]
+
+    meeting_name = sheet["G1"].value
+
+    if meeting_name:
+        meeting_name = str(meeting_name).strip()
+        print(f"📍 Meeting name from Excel: {meeting_name}")
+        return meeting_name
+
+    print("⚠ No meeting name found in G1")
+    return None
 
 def main():
     driver = setup_driver()
 
-    excel_meeting = get_meeting_from_excel()
-    if not excel_meeting:
-        print("❌ No meeting name in Excel")
-        return
-
-    race_links = get_races_for_meeting(driver, excel_meeting)
+    meeting_name = get_meeting_from_excel()
+    
+    race_links = get_races(driver)
 
     for race_link in race_links:
-        extract_sb_rating(driver, race_link)
+         extract_sb_rating(driver, race_link)
 
     driver.quit()
     save_sb_to_excel(FILE_NAME, SR)
-
 
 if __name__ == '__main__':
     main()
