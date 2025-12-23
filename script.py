@@ -43,68 +43,77 @@ def setup_driver():
     
     return driver
 
-def extract_sb_rating(driver, race_url):
+def extract_sb_rating(driver, race_url, sheet_name):
     global SR
 
     driver.get(BASE_URL + race_url)
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 20)
 
+    # 1️⃣ Expand Form
+    try:
+        expand_btn = wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "span[data-automation-id='racecard-expand-form']")
+            )
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", expand_btn)
+        time.sleep(0.3)
+        driver.execute_script("arguments[0].click();", expand_btn)
+    except Exception:
+        pass  # already expanded
+
+    # 2️⃣ Wait for shortforms
     wait.until(
         EC.presence_of_element_located(
-            (By.CSS_SELECTOR, "div[data-automation-id^='racecard-outcome-']")
+            (By.CSS_SELECTOR, "div[data-automation-id^='shortform-']")
         )
     )
 
-    runner_ids = [
-        el.get_attribute("data-automation-id").replace("racecard-outcome-", "")
-        for el in driver.find_elements(
-            By.CSS_SELECTOR,
-            "div[data-automation-id^='racecard-outcome-']")
-    ]
+    soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    print("--Next Race--")
+    shortforms = soup.select("div[data-automation-id^='shortform-']")
+    print(f"🧩 Shortforms found: {len(shortforms)}")
 
-    for runner_id in runner_ids:
-        try:
-            r = driver.find_element(
-                By.CSS_SELECTOR,
-                f"div[data-automation-id='racecard-outcome-{runner_id}']"
-            )
+    for sf in shortforms:
+        sf_id = sf.get("data-automation-id")
 
-            driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center'});", r
-            )
-            driver.execute_script("arguments[0].click();", r)
-
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-
-            horse_el = soup.select_one(
-                f"div[data-automation-id='racecard-outcome-{runner_id}'] "
-                "div[data-automation-id='racecard-outcome-name'] span"
-            )
-            if not horse_el:
-                continue
-
-            raw_name = horse_el.get_text(strip=True)
-            horse_name = re.sub(r"^\d+\.\s*", "", raw_name)
-
-            sb_el = soup.select_one(
-                f"div[data-automation-id='shortform-{runner_id}'] "
-                "div[data-automation-id='shortform-SB Rating'] span:last-child"
-            )
-            if not sb_el:
-                continue
-
-            sb_rating = sb_el.get_text(strip=True)
-
-            SR.setdefault("RACE", {})
-            SR["RACE"][horse_name] = sb_rating
-
-            print(f"✅ {horse_name} → SB Rating {sb_rating}")
-
-        except Exception:
-            # intentionally silent – DOM instability
+        # Extract runner ID
+        match = re.search(r"shortform-(\d+)", sf_id)
+        if not match:
             continue
+
+        runner_id = match.group(1)
+
+        # 🔑 Find matching racecard
+        racecard = soup.select_one(
+            f"div[data-automation-id='racecard-outcome-{runner_id}']"
+        )
+        if not racecard:
+            continue
+
+        # Horse name
+        name_el = racecard.select_one(
+            "div[data-automation-id='racecard-outcome-name'] span"
+        )
+        if not name_el:
+            continue
+
+        horse_name = re.sub(r"^\d+\.\s*", "", name_el.get_text(strip=True))
+
+        # SB Rating
+        sb_el = sf.select_one(
+            "div[data-automation-id='shortform-SB Rating'] span:last-child"
+        )
+        if not sb_el:
+            continue
+
+        sb_rating = sb_el.get_text(strip=True)
+
+        SR.setdefault(sheet_name, {})
+        SR[sheet_name][horse_name] = sb_rating
+
+        print(f"✅ {sheet_name} | {horse_name} → SB Rating {sb_rating}")
+
 
 def disable_international_filter(driver):
     wait = WebDriverWait(driver, 20)
@@ -232,20 +241,21 @@ def get_races_for_meeting(driver, excel_meeting_name):
     return race_links
 
 
-def get_meeting_from_excel():
+def get_meetings_from_excel():
     workbook = load_workbook(FILE_NAME, keep_vba=True)
 
-    sheet = workbook.active  # or workbook.worksheets[0]
+    meetings = []  # [(sheet_name, meeting_name)]
 
-    meeting_name = sheet["G1"].value
+    for sheet in workbook.worksheets:
+        meeting = sheet["G1"].value
+        if meeting:
+            meetings.append((sheet.title, str(meeting).strip()))
 
-    if meeting_name:
-        meeting_name = str(meeting_name).strip()
-        print(f"📍 Meeting name from Excel: {meeting_name}")
-        return meeting_name
+    print("📄 Meetings loaded from Excel:")
+    for s, m in meetings:
+        print(f"   {s} → {m}")
 
-    print("⚠ No meeting name found in G1")
-    return None
+    return meetings
 
 def normalize_meeting(name: str) -> str:
     return (
@@ -265,9 +275,9 @@ def normalize_horse(name: str) -> str:
     )
 
 def save_sb_to_excel(excel_file, SR):
-    workbook = load_workbook(filename=excel_file, keep_vba=True)
+    workbook = load_workbook(excel_file, keep_vba=True)
 
-    for sheet_name in workbook.sheetnames:
+    for sheet_name, horses in SR.items():
         sheet = workbook[sheet_name]
 
         for row in sheet.iter_rows(min_row=1):
@@ -277,12 +287,9 @@ def save_sb_to_excel(excel_file, SR):
 
             excel_horse = normalize_horse(str(horse_cell.value))
 
-            for sb_horse, sb_rating in SR.get("RACE", {}).items():
+            for sb_horse, sb_rating in horses.items():
                 if normalize_horse(sb_horse) == excel_horse:
                     sheet.cell(row=horse_cell.row, column=25, value=sb_rating)
-                    print(
-                        f"Saved | {horse_cell.value} → {sb_rating}"
-                    )
                     break
 
     workbook.save(excel_file)
@@ -292,18 +299,19 @@ def save_sb_to_excel(excel_file, SR):
 def main():
     driver = setup_driver()
 
-    excel_meeting = get_meeting_from_excel()
-    if not excel_meeting:
-        print("❌ No meeting name in Excel")
-        return
+    meetings = get_meetings_from_excel()
 
-    race_links = get_races_for_meeting(driver, excel_meeting)
+    for sheet_name, meeting_name in meetings:
+        print(f"\n📍 Processing {sheet_name} | Meeting: {meeting_name}")
 
-    for race_link in race_links:
-        extract_sb_rating(driver, race_link)
+        race_links = get_races_for_meeting(driver, meeting_name)
+
+        for race_url in race_links:
+            extract_sb_rating(driver, race_url, sheet_name)
 
     driver.quit()
     save_sb_to_excel(FILE_NAME, SR)
+
 
 
 if __name__ == '__main__':
